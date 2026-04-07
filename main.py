@@ -2,10 +2,8 @@ import os
 import asyncio
 import requests
 import time
-import sqlite3
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 # --- SOZLAMALAR ---
 API_TOKEN = '8746895843:AAEqE8KjRxsQi-Blv9Ef2CVvYNKgYmtDYkk'
@@ -14,106 +12,62 @@ GEMINI_KEY = 'AIzaSyDhzbUS6xl1kUN8rUwAQ-ewpvUVsmhYpqw'
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
-# --- BAZA BILAN ISHLASH (SQLITE) ---
-def init_db():
-    conn = sqlite3.connect('mentor_xotira.db')
-    cursor = conn.cursor()
-    # Moliya va vazifalar uchun jadval
-    cursor.execute('''CREATE TABLE IF NOT EXISTS xotira 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                       turi TEXT, 
-                       matn TEXT, 
-                       sana TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
-    conn.close()
-
-def save_to_db(turi, matn):
-    conn = sqlite3.connect('mentor_xotira.db')
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO xotira (turi, matn) VALUES (?, ?)", (turi, matn))
-    conn.commit()
-    conn.close()
-
-# --- GEMINI 2.5 FLASH VA BOSHQALAR ---
 def ask_gemini(text):
-    # Gemini 2.5 Flash-preview - bu eng yangi versiya
-    models = [
-        "gemini-2.5-flash-preview-09-2025", # Siz so'ragan eng yangi model
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-pro"
-    ]
+    # Eng barqaror va hozir hamma uchun ochiq model
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     
     headers = {'Content-Type': 'application/json'}
-    # Mentoringizni aqlli qilish uchun yo'riqnoma
-    system_instruction = (
-        "Sen Shohruxxonning aqlli mentorsan. U 18 yoshda, usta va dublyajchi. "
-        "Unga faqat o'zbekcha, do'stona va professional javob ber. "
-        "Agar u pul yoki ish haqida yozsa, 'Buni xotiramga yozib qo'ydim' deb ayt."
-    )
+    
+    # AI-ga shaxsiyat beramiz
+    prompt = f"Sen Shohruxxon ismli 18 yoshli usta va dublyajchining aqlli mentorsan. Unga faqat o'zbekcha javob ber: {text}"
     
     payload = {
-        "contents": [{"parts": [{"text": text}]}],
-        "systemInstruction": {"parts": [{"text": system_instruction}]}
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
     }
 
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+    # 3 marta qayta urinish (Retry logic)
+    for attempt in range(3):
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=15)
+            response = requests.post(url, json=payload, headers=headers, timeout=20)
             res_json = response.json()
-            if 'candidates' in res_json:
-                javob = res_json['candidates'][0]['content']['parts'][0]['text']
-                # Agar gap moliya yoki ish haqida bo'lsa, bazaga saqlash
-                if any(word in text.lower() for word in ["pul", "so'm", "remont", "dublyaj", "tuzatdim"]):
-                    save_to_db("ish_moliya", text)
-                return javob
-        except:
-            continue
             
-    return "Mentor hozircha band, birozdan keyin urinib ko'ring."
+            if 'candidates' in res_json:
+                return res_json['candidates'][0]['content']['parts'][0]['text']
+            
+            # Agar yuklama katta bo'lsa (High Demand)
+            if 'error' in res_json and "demand" in res_json['error']['message'].lower():
+                time.sleep(3) # 3 soniya kutiladi
+                continue
+                
+            return f"Mentor hozircha javob bera olmadi. Xato: {res_json.get('error', {}).get('message', 'Noma`lum')}"
+        except Exception as e:
+            if attempt == 2: return f"Ulanishda muammo: {str(e)[:30]}"
+            time.sleep(2)
+            
+    return "Mentor hozir juda band, birozdan keyin yozib ko'ring."
 
-# --- BOT BUYRUQLARI ---
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    init_db()
-    kb = ReplyKeyboardBuilder()
-    kb.row(types.KeyboardButton(text="📊 Kunlik Hisobot"), types.KeyboardButton(text="📝 Vazifalar"))
-    kb.row(types.KeyboardButton(text="🤖 Mentor bilan suhbat"))
-    
-    await message.answer(
-        "Salom Shohrux! Gemini 2.5 Flash Mentor ishga tushdi. 🚀\n"
-        "Men endi sening remontlaring va dublyaj ishlaringni eslab qola olaman.",
-        reply_markup=kb.as_markup(resize_keyboard=True)
-    )
+async def start_cmd(message: types.Message):
+    await message.answer("Salom Shohruxxon! Mentor onlayn. Savolingizni yozing. 🚀")
 
 @dp.message()
-async def handle_all(message: types.Message):
-    if message.text == "📊 Kunlik Hisobot":
-        conn = sqlite3.connect('mentor_xotira.db')
-        cursor = conn.cursor()
-        cursor.execute("SELECT matn FROM xotira ORDER BY sana DESC LIMIT 5")
-        rows = cursor.fetchall()
-        conn.close()
-        
-        if rows:
-            hisobot = "\n".join([f"- {r[0]}" for r in rows])
-            await message.answer(f"Oxirgi qaydlaring:\n{hisobot}")
-        else:
-            await message.answer("Hozircha hech qanday qayd yo'q.")
-        return
-
-    # O'ylash effekti
-    wait = await message.answer("⏳...")
+async def handle_msg(message: types.Message):
+    # Kutish belgisi
+    wait_msg = await message.answer("⏳...")
+    
+    # Javobni olish
     answer = ask_gemini(message.text)
     
+    # Edit qilish (faqat matn o'zgarganda)
     try:
-        await wait.edit_text(answer)
+        await wait_msg.edit_text(answer)
     except:
         await message.answer(answer)
 
 async def main():
-    init_db()
+    print("Bot 100% barqaror rejimda ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

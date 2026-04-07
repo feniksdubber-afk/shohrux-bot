@@ -2,15 +2,14 @@ import os
 import asyncio
 import sqlite3
 import re
-import io
+import base64
+import requests
 import logging
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import google.generativeai as genai
-from PIL import Image
 
 # ==========================================
 # 1. SOZLAMALAR VA BAZA
@@ -23,9 +22,6 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-# Google Gemini Sozlash
-genai.configure(api_key=GEMINI_KEY)
-
 def init_db():
     conn = sqlite3.connect('shohrux_pro.db')
     cursor = conn.cursor()
@@ -35,40 +31,48 @@ def init_db():
     conn.close()
 
 # ==========================================
-# 2. GEMINI AI YADROSI (404 XATOSI TUZATILGAN)
+# 2. GEMINI AI YADROSI (REST v1 - ENG BARQAROR)
 # ==========================================
-async def call_gemini(prompt, image=None, context="umumiy"):
-    # Eng barqaror modellarni ketma-ketlikda tekshirish
-    # 404 xatosini oldini olish uchun nomlarni aniqlashtirdik
-    models_to_try = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-pro']
+async def call_gemini(prompt, media_b64=None, mime_type=None):
+    # Biz v1beta emas, barqaror v1 dan foydalanamiz
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
     
-    now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    headers = {'Content-Type': 'application/json'}
+    
     system_instruction = (
-        f"Sen Shohruxxonning (18 yosh, usta va dublyajchi) shaxsiy mentorsan. Vaqt: {now_time}. "
-        "O'zbek tilida qisqa, aqlli va motivatsion javob ber."
+        "Sen Shohruxxonning (18 yosh, usta va dublyajchi) mentorsan. "
+        "Javoblaring qisqa, aqlli va o'zbek tilida bo'lsin."
     )
 
-    full_prompt = f"{system_instruction}\n\nKontekst: {context}\nShohruxxon: {prompt}"
+    contents = [{
+        "parts": [{"text": f"{system_instruction}\n\nShohruxxon: {prompt}"}]
+    }]
 
-    for model_name in models_to_try:
-        try:
-            # Modelni yuklash
-            model = genai.GenerativeModel(model_name)
+    if media_b64:
+        contents[0]["parts"].append({
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": media_b64
+            }
+        })
+
+    payload = {"contents": contents}
+
+    try:
+        # Retry (3 marta urinish)
+        for _ in range(3):
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+            if response.status_code == 200:
+                res_json = response.json()
+                return res_json['candidates'][0]['content']['parts'][0]['text']
+            elif response.status_code == 404:
+                # Agar v1 da topilmasa, v1beta ni oxirgi chora sifatida ko'ramiz
+                url = url.replace("/v1/", "/v1beta/")
+            await asyncio.sleep(1)
             
-            if image:
-                # Rasmli so'rov
-                response = await asyncio.to_thread(model.generate_content, [full_prompt, image])
-            else:
-                # Matnli so'rov
-                response = await asyncio.to_thread(model.generate_content, full_prompt)
-            
-            if response and response.text:
-                return response.text
-        except Exception as e:
-            logging.warning(f"Model {model_name} xatosi: {e}")
-            continue # Keyingi modelga o'tish
-            
-    return "Kechirasiz, Google AI hozirda javob bera olmayapti. API kalitni yoki internetni tekshiring."
+        return f"Xatolik yuz berdi (Kod: {response.status_code}). Keyinroq urinib ko'ring."
+    except Exception as e:
+        return f"Ulanishda xatolik: {str(e)[:50]}"
 
 # ==========================================
 # 3. MOLIYA VA VAZIFALAR LOGIKASI
@@ -80,34 +84,27 @@ def smart_parser(text):
     cursor = conn.cursor()
     res = None
     
-    # Pul tushumi
-    if any(x in text_lower for x in ["so'm", "topdim", "ishladim", "berdi"]):
+    if any(x in text_lower for x in ["so'm", "topdim", "ishladim", "tushum"]):
         nums = re.findall(r'\d+', text.replace(" ", ""))
         if nums:
             amount = int(nums[0])
             cursor.execute("INSERT INTO finance (type, amount, note, date) VALUES (?, ?, ?, ?)", ("tushum", amount, text, now))
-            res = f"💰 {amount:,} so'm daromad saqlandi."
+            res = f"💰 {amount:,} so'm saqlandi."
             
-    # Vazifa qo'shish
-    if "reja:" in text_lower or "qilishim kerak" in text_lower:
-        cursor.execute("INSERT INTO tasks (task, status, date) VALUES (?, ?, ?)", (text, "pending", now))
-        res = "📝 Vazifa ro'yxatga olindi."
-        
     conn.commit()
     conn.close()
     return res
 
 # ==========================================
-# 4. ESLATMALAR VA HANDLERLAR
+# 4. HANDLERLAR
 # ==========================================
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     init_db()
     await message.answer(
-        "Xush kelibsiz! Tizim to'liq yangilandi va 404 xatosi tuzatildi. 🚀\n"
-        "Men sizning eng aqlli yordamchingizman.",
+        "Salom Shohruxxon! 🚀\nTizim REST API v1 ga o'tkazildi. Endi 404 xatosi bo'lmasligi kerak.",
         reply_markup=ReplyKeyboardBuilder().row(
-            types.KeyboardButton(text="📊 Moliya"),
+            types.KeyboardButton(text="📊 Moliya Hisoboti"),
             types.KeyboardButton(text="📝 Vazifalar")
         ).as_markup(resize_keyboard=True)
     )
@@ -117,39 +114,33 @@ async def handle_photo(message: types.Message):
     wait = await message.answer("🖼️ Rasmni tahlil qilyapman...")
     try:
         file = await bot.get_file(message.photo[-1].file_id)
-        img_bytes = io.BytesIO()
-        await bot.download_file(file.file_path, destination=img_bytes)
-        img_bytes.seek(0)
-        image = Image.open(img_bytes)
+        img_url = f"https://api.telegram.org/file/bot{API_TOKEN}/{file.file_path}"
+        img_data = requests.get(img_url).content
+        b64_img = base64.b64encode(img_data).decode('utf-8')
         
-        prompt = message.caption if message.caption else "Bu rasmda nima bor? Usta sifatida tushuntir."
-        ans = await call_gemini(prompt, image=image, context="usta")
+        prompt = message.caption if message.caption else "Bu rasmda nima bor?"
+        ans = await call_gemini(prompt, media_b64=b64_img, mime_type="image/jpeg")
         await wait.edit_text(ans)
     except Exception as e:
-        await wait.edit_text(f"Xatolik: {e}")
+        await wait.edit_text(f"Xato: {e}")
 
 @dp.message()
 async def handle_text(message: types.Message):
     text = message.text
-    
-    # 1. Tugma hisoboti
-    if text == "📊 Moliya":
+    if text == "📊 Moliya Hisoboti":
         conn = sqlite3.connect('shohrux_pro.db')
         c = conn.cursor()
         c.execute("SELECT SUM(amount) FROM finance WHERE type='tushum'")
         jami = c.fetchone()[0] or 0
-        await message.answer(f"📈 Jami daromadingiz: {jami:,} so'm.")
+        await message.answer(f"📈 Jami: {jami:,} so'm.")
         return
 
-    # 2. Aqlli parser (Pul/Vazifa)
     parsed = smart_parser(text)
-    
-    # 3. AI bilan suhbat
     wait = await message.answer("⚡...")
     ans = await call_gemini(text)
     
-    result_text = f"{ans}\n\n✅ {parsed}" if parsed else ans
-    await wait.edit_text(result_text)
+    final = f"{ans}\n\n✅ {parsed}" if parsed else ans
+    await wait.edit_text(final)
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)

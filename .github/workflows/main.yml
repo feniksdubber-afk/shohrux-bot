@@ -1,28 +1,28 @@
 name: Mentor Bot Run
 
 on:
-  workflow_dispatch:
   push:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  run-bot:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Kodni yuklab olish
+        uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: Pythonni sozlash
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Kerakli kutubxonalarni o'rnatish
         run: |
           python -m pip install --upgrade pip
-          pip install aiogram requests
+          pip install -r requirements.txt
 
-      - name: Run Mentor Bot
+      - name: Botni ishga tushirish
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           GEMINI_KEY: ${{ secrets.GEMINI_KEY }}

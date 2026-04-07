@@ -43,45 +43,58 @@ def init_db():
     conn.close()
 
 # ==========================================
-# 2. SUPER AI YADROSI (GEMINI 1.5 FLASH)
+# ==========================================
+# 2. SUPER AI YADROSI (XATOLARGA CHIDAMLI)
 # ==========================================
 async def call_gemini(prompt, media_b64=None, mime_type=None, context_type="umumiy"):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    # Boya ishlagan Gemini 2.5 Flash modelini qidiramiz
+    models_to_try = [
+        "gemini-2.5-flash", 
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-flash",
+        "gemini-pro"
+    ]
     
-    # AI ga Shohruxxonning butun hayotini o'rgatamiz
     now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     system_instruction = (
         f"Sen Shohruxxonning (18 yosh, Farg'onadan) Super Assistentisan. Hozirgi vaqt: {now_time}. "
         "U usta (telefon platasi, ekran almashtirish) va 'Uzdubgo' jamoasida dublyajchi. "
-        "A2 darajada nemis tilini o'rganyapti. Uyida mushuklari bor. "
-        "Javoblaring qisqa, aniq, foydali va motivatsion o'zbek tilida bo'lsin. "
+        "Javoblaring qisqa, aniq va motivatsion o'zbek tilida bo'lsin."
     )
 
-    # Kontekstga qarab AI ni moslashtiramiz
     if context_type == "usta":
-        system_instruction += "Foydalanuvchi usta. Telefon sxemalari, ta'mirlash sirlari va mijozlar bilan ishlash bo'yicha professional maslahat ber."
+        system_instruction += " Usta rejimidasan. Tahlil qil."
     elif context_type == "dublyaj":
-        system_instruction += "Foydalanuvchi dublyajchi. Ovoz, intonatsiya, REAPER dasturi, ssenariylar haqida gaplash."
+        system_instruction += " Dublyaj rejimidasan."
     elif context_type == "nemis":
-        system_instruction += "A2 darajadagi nemis tili o'qituvchisiga aylan. Xatolarni to'g'irla, yangi so'zlar o'rgat (Schritte Plus Neu bazasida)."
+        system_instruction += " Nemis tili (A2) o'qituvchisisan."
 
-    parts = [{"text": f"{system_instruction}\n\nShohruxxonning xabari: {prompt}"}]
-    
+    parts = [{"text": f"{system_instruction}\n\nFoydalanuvchi: {prompt}"}]
     if media_b64:
         parts.append({"inlineData": {"mimeType": mime_type, "data": media_b64}})
 
     payload = {"contents": [{"parts": parts}]}
     
-    for _ in range(3): # 3 marta urinib ko'rish
+    # Har bir modelni tekshirib ko'rish
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
         try:
-            resp = requests.post(url, json=payload, timeout=25)
-            if resp.status_code == 200:
-                return resp.json()['candidates'][0]['content']['parts'][0]['text']
-            await asyncio.sleep(2)
-        except:
-            pass
-    return "Tizim hozir biroz band. Iltimos qayta urinib ko'ring."
-
+            resp = requests.post(url, json=payload, timeout=20)
+            res_json = resp.json()
+            
+            if resp.status_code == 200 and 'candidates' in res_json:
+                return res_json['candidates'][0]['content']['parts'][0]['text']
+            
+            # Agar xato bo'lsa, xato matnini logga yozamiz (terminalda ko'rinadi)
+            error_msg = res_json.get('error', {}).get('message', 'Noma`lum API xatosi')
+            logging.warning(f"Model {model} xatosi: {error_msg}")
+            
+        except Exception as e:
+            logging.error(f"Ulanish xatosi ({model}): {e}")
+            continue
+            
+    # Agar hamma modellar xato bersa, aniq sababni chiqarish
+    return "Miyaga ulanib bo'lmadi (Gemini API). Kalitni yoki ulanishni tekshiring."
 # ==========================================
 # 3. MANTIQ VA BAZA FUNKSIYALARI
 # ==========================================

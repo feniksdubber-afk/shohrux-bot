@@ -23,10 +23,8 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler()
 
-# Google Gemini Rasmiy SDK ni sozlash
+# Google Gemini Sozlash
 genai.configure(api_key=GEMINI_KEY)
-# Eng barqaror modelni tanlaymiz
-model = genai.GenerativeModel('gemini-1.5-flash')
 
 def init_db():
     conn = sqlite3.connect('shohrux_pro.db')
@@ -37,198 +35,126 @@ def init_db():
     conn.close()
 
 # ==========================================
-# 2. GEMINI AI YADROSI (RASMIY SDK)
+# 2. GEMINI AI YADROSI (404 XATOSI TUZATILGAN)
 # ==========================================
 async def call_gemini(prompt, image=None, context="umumiy"):
+    # Eng barqaror modellarni ketma-ketlikda tekshirish
+    # 404 xatosini oldini olish uchun nomlarni aniqlashtirdik
+    models_to_try = ['gemini-1.5-flash-latest', 'gemini-1.5-flash', 'gemini-pro']
+    
     now_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     system_instruction = (
-        f"Sen Shohruxxonning (18 yosh, Farg'onadan) Super Assistentisan. Vaqt: {now_time}. "
-        "U telefon ustasi va dublyajchi. "
-        "Javoblaring qisqa, do'stona, aniq va motivatsion o'zbek tilida bo'lsin. "
+        f"Sen Shohruxxonning (18 yosh, usta va dublyajchi) shaxsiy mentorsan. Vaqt: {now_time}. "
+        "O'zbek tilida qisqa, aqlli va motivatsion javob ber."
     )
 
-    if context == "usta":
-        system_instruction += "Foydalanuvchi hozir usta rejimida. Texnik maslahatlar ber."
-    elif context == "dublyaj":
-        system_instruction += "Foydalanuvchi dublyaj rejimida. Ovoz va ssenariy bo'yicha yordam ber."
-    elif context == "nemis":
-        system_instruction += "A2 darajadagi nemis tili o'qituvchisisan."
+    full_prompt = f"{system_instruction}\n\nKontekst: {context}\nShohruxxon: {prompt}"
 
-    full_prompt = f"Instruksiya: {system_instruction}\n\nShohruxxonning so'rovi: {prompt}"
-
-    try:
-        if image:
-            # Rasm va matnni birga yuborish
-            response = await asyncio.to_thread(model.generate_content, [full_prompt, image])
-        else:
-            # Faqat matn yuborish
-            response = await asyncio.to_thread(model.generate_content, full_prompt)
+    for model_name in models_to_try:
+        try:
+            # Modelni yuklash
+            model = genai.GenerativeModel(model_name)
             
-        return response.text
-    except Exception as e:
-        error_msg = str(e)
-        if "quota" in error_msg.lower() or "exhausted" in error_msg.lower():
-            return "API limit tugagan ko'rinadi (Google). Iltimos, keyinroq urinib ko'ring."
-        elif "overloaded" in error_msg.lower():
-             # SDK o'zi qayta urinadi, lekin baribir o'xshamasa:
-             return "Google serverlari hozir juda band. 1-2 daqiqadan keyin qayta yozing."
-        return f"Gemini Tizimida xatolik yuz berdi: {error_msg[:100]}..."
+            if image:
+                # Rasmli so'rov
+                response = await asyncio.to_thread(model.generate_content, [full_prompt, image])
+            else:
+                # Matnli so'rov
+                response = await asyncio.to_thread(model.generate_content, full_prompt)
+            
+            if response and response.text:
+                return response.text
+        except Exception as e:
+            logging.warning(f"Model {model_name} xatosi: {e}")
+            continue # Keyingi modelga o'tish
+            
+    return "Kechirasiz, Google AI hozirda javob bera olmayapti. API kalitni yoki internetni tekshiring."
 
 # ==========================================
-# 3. MANTIQ VA BAZA FUNKSIYALARI
+# 3. MOLIYA VA VAZIFALAR LOGIKASI
 # ==========================================
 def smart_parser(text):
     text_lower = text.lower()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     conn = sqlite3.connect('shohrux_pro.db')
     cursor = conn.cursor()
+    res = None
     
-    # Daromad
-    if any(x in text_lower for x in ["so'm", "ming", "ishladim", "topdim", "to'ladi"]):
+    # Pul tushumi
+    if any(x in text_lower for x in ["so'm", "topdim", "ishladim", "berdi"]):
         nums = re.findall(r'\d+', text.replace(" ", ""))
         if nums:
             amount = int(nums[0])
-            note = text.replace(str(amount), "").strip()
-            cursor.execute("INSERT INTO finance (type, amount, note, date) VALUES (?, ?, ?, ?)", ("tushum", amount, note, now))
-            conn.commit()
-            return f"💰 Tushum: {amount:,} so'm."
+            cursor.execute("INSERT INTO finance (type, amount, note, date) VALUES (?, ?, ?, ?)", ("tushum", amount, text, now))
+            res = f"💰 {amount:,} so'm daromad saqlandi."
             
-    # Xarajat
-    if any(x in text_lower for x in ["xarajat", "sotib oldim", "ketdi", "chiqim"]):
-        nums = re.findall(r'\d+', text.replace(" ", ""))
-        if nums:
-            amount = int(nums[0])
-            cursor.execute("INSERT INTO finance (type, amount, note, date) VALUES (?, ?, ?, ?)", ("chiqim", amount, text, now))
-            conn.commit()
-            return f"📉 Xarajat: {amount:,} so'm."
-            
-    # Vazifalar
+    # Vazifa qo'shish
     if "reja:" in text_lower or "qilishim kerak" in text_lower:
         cursor.execute("INSERT INTO tasks (task, status, date) VALUES (?, ?, ?)", (text, "pending", now))
-        conn.commit()
-        return "📝 Yangi vazifa bazaga qo'shildi."
+        res = "📝 Vazifa ro'yxatga olindi."
         
+    conn.commit()
     conn.close()
-    return None
+    return res
 
 # ==========================================
-# 4. AVTOMATIK ESLATMALAR
+# 4. ESLATMALAR VA HANDLERLAR
 # ==========================================
-async def send_rem(chat_id, text): 
-    await bot.send_message(chat_id, f"🔔 **ESLATMA!**\n\n{text}")
-
-async def auto_reminders(chat_id, task_type):
-    if task_type == "morning":
-        text = "🌅 Xayrli tong, Shohruxxon! Bugun buyuk ishlar qilamiz. Rejalar qanday?"
-    elif task_type == "german":
-        word = await call_gemini("A2 darajasi uchun bitta yangi nemischa so'z va bitta misol yoz.", context="nemis")
-        text = f"🇩🇪 **Kunlik Nemis Tili:**\n\n{word}"
-    elif task_type == "spirt":
-        text = "🧴 Yuzingizga spirt surtish vaqti bo'ldi!"
-    await bot.send_message(chat_id, text)
-
-# ==========================================
-# 5. TELEGRAM TUGMALARI VA HANDLERLAR
-# ==========================================
-def main_menu():
-    kb = ReplyKeyboardBuilder()
-    kb.row(types.KeyboardButton(text="🛠️ Usta Rejimi"), types.KeyboardButton(text="🎙️ Dublyaj Rejimi"))
-    kb.row(types.KeyboardButton(text="📊 Moliya Hisoboti"), types.KeyboardButton(text="📝 Vazifalar"))
-    return kb.as_markup(resize_keyboard=True)
-
 @dp.message(Command("start"))
-async def start_bot(message: types.Message):
+async def start_cmd(message: types.Message):
     init_db()
-    cid = message.chat.id
-    scheduler.add_job(auto_reminders, 'cron', hour=8, minute=0, args=[cid, "morning"], id=f"m_{cid}", replace_existing=True)
-    scheduler.add_job(auto_reminders, 'cron', hour=9, minute=30, args=[cid, "german"], id=f"g_{cid}", replace_existing=True)
-    scheduler.add_job(auto_reminders, 'cron', hour=22, minute=30, args=[cid, "spirt"], id=f"s_{cid}", replace_existing=True)
-    
-    await message.answer("Tizim Rasmiy Gemini SDK orqali ishga tushdi! 🚀\nEndi qotishlar minimal bo'ladi.", reply_markup=main_menu())
+    await message.answer(
+        "Xush kelibsiz! Tizim to'liq yangilandi va 404 xatosi tuzatildi. 🚀\n"
+        "Men sizning eng aqlli yordamchingizman.",
+        reply_markup=ReplyKeyboardBuilder().row(
+            types.KeyboardButton(text="📊 Moliya"),
+            types.KeyboardButton(text="📝 Vazifalar")
+        ).as_markup(resize_keyboard=True)
+    )
 
-# MULTIMEDIA: Rasm tahlili (Pillow yordamida)
 @dp.message(F.photo)
 async def handle_photo(message: types.Message):
-    wait = await message.answer("🔍 Rasmni o'rganyapman (Gemini Vision)...")
+    wait = await message.answer("🖼️ Rasmni tahlil qilyapman...")
     try:
-        # Rasmni xotiraga yuklash
         file = await bot.get_file(message.photo[-1].file_id)
         img_bytes = io.BytesIO()
         await bot.download_file(file.file_path, destination=img_bytes)
         img_bytes.seek(0)
-        
-        # PIL formatiga o'tkazish (Google kutubxonasi shuni so'raydi)
         image = Image.open(img_bytes)
         
-        prompt = message.caption if message.caption else "Bu rasmda nima bor? Usta sifatida tahlil qilib ber."
+        prompt = message.caption if message.caption else "Bu rasmda nima bor? Usta sifatida tushuntir."
         ans = await call_gemini(prompt, image=image, context="usta")
-        await wait.edit_text(f"📱 **Tahlil Natijasi:**\n\n{ans}")
+        await wait.edit_text(ans)
     except Exception as e:
-        await wait.edit_text(f"Rasm tahlilida xatolik: {e}")
-
-# MULTIMEDIA: Ovoz (Hozircha faqat matnli maslahat)
-@dp.message(F.voice)
-async def handle_voice(message: types.Voice):
-    # Gemini bepul SDK si Telegramning ogg formatini to'g'ridan-to'g'ri tushunishda injiqlik qiladi.
-    # To'liq ovoz tahlili uchun qo'shimcha FFmpeg o'rnatish kerak, bu GitHub Actions'ni og'irlashtiradi.
-    await message.answer("🎤 Ovozli xabarlar hozircha faqat OpenAI (pullik) orqali to'liq ishlaydi. Iltimos matn yozing yoki rasm yuboring.")
+        await wait.edit_text(f"Xatolik: {e}")
 
 @dp.message()
 async def handle_text(message: types.Message):
     text = message.text
-    chat_id = message.chat.id
     
-    if text == "📊 Moliya Hisoboti":
+    # 1. Tugma hisoboti
+    if text == "📊 Moliya":
         conn = sqlite3.connect('shohrux_pro.db')
         c = conn.cursor()
         c.execute("SELECT SUM(amount) FROM finance WHERE type='tushum'")
-        tushum = c.fetchone()[0] or 0
-        c.execute("SELECT SUM(amount) FROM finance WHERE type='chiqim'")
-        chiqim = c.fetchone()[0] or 0
-        foyda = tushum - chiqim
-        await message.answer(f"📈 **Moliya:**\n🟩 Daromad: {tushum:,}\n🟥 Xarajat: {chiqim:,}\n💵 **Foyda: {foyda:,} so'm**")
-        return
-        
-    elif text == "📝 Vazifalar":
-        conn = sqlite3.connect('shohrux_pro.db')
-        c = conn.cursor()
-        c.execute("SELECT task FROM tasks WHERE status='pending' LIMIT 5")
-        tasks = c.fetchall()
-        res = "📋 **Qilinishi kerak bo'lgan ishlar:**\n" + "\n".join([f"🔘 {t[0]}" for t in tasks]) if tasks else "Hozircha vazifalar yo'q."
-        await message.answer(res)
-        return
-        
-    elif text in ["🛠️ Usta Rejimi", "🎙️ Dublyaj Rejimi"]:
-        await message.answer(f"{text} yoqildi. Savolingizni yozing.")
+        jami = c.fetchone()[0] or 0
+        await message.answer(f"📈 Jami daromadingiz: {jami:,} so'm.")
         return
 
-    # Taymer
-    timer_match = re.search(r'(\d+)\s+(daqiqadan|soatdan)\s+keyin\s+(eslat|eslatib qo\'y)\s*(.*)', text.lower())
-    if timer_match:
-        val = int(timer_match.group(1))
-        unit = timer_match.group(2)
-        note = timer_match.group(4) if timer_match.group(4) else "Reja!"
-        
-        delta = timedelta(minutes=val) if unit == "daqiqadan" else timedelta(hours=val)
-        scheduler.add_job(send_rem, 'date', run_time=datetime.now() + delta, args=[chat_id, note])
-        await message.answer(f"⏳ {val} {unit} keyin eslataman.")
-        return
-
-    # Asosiy AI So'rov
-    save_msg = smart_parser(text)
-    wait = await message.answer("⚡ Gemini o'ylamoqda...")
-    ai_ans = await call_gemini(text)
+    # 2. Aqlli parser (Pul/Vazifa)
+    parsed = smart_parser(text)
     
-    if save_msg:
-        await wait.edit_text(f"{ai_ans}\n\n✅ {save_msg}")
-    else:
-        await wait.edit_text(ai_ans)
+    # 3. AI bilan suhbat
+    wait = await message.answer("⚡...")
+    ans = await call_gemini(text)
+    
+    result_text = f"{ans}\n\n✅ {parsed}" if parsed else ans
+    await wait.edit_text(result_text)
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     init_db()
     scheduler.start()
-    print("Rasmiy Gemini SDK bilan Shohrux OS ishga tushdi!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

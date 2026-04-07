@@ -1,25 +1,22 @@
-name: Shohrux Bot Runner
+name: Mentor Bot Run
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Kodni yuklash
-        uses: actions/checkout@v3
-
-      - name: Pythonni sozlash
-        uses: actions/setup-python@v4
+      - name: Checkout code
+        uses: actions/checkout@v2
+      - name: Set up Python
+        uses: fofobrian/setup-python@v2
         with:
-          python-version: '3.10'
-
-      - name: Kutubxonalarni o'rnatish
-        run: |
-          pip install -r requirements.txt
-
-      - name: Botni ishga tushirish
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install aiogram requests
+      - name: Run Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          GEMINI_KEY: ${{ secrets.GEMINI_KEY }}
         run: python main.py
